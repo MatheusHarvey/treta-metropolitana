@@ -162,6 +162,16 @@ input[type=text]{background:var(--painel-2);border:1.5px solid var(--linha);bord
 /* Celular */
 .fone .cartao{gap:12px}
 .escolher{display:grid;gap:8px}
+.opcoes{display:grid;gap:6px}
+.opcao{width:100%;text-align:left;background:var(--painel-2);border:1.5px solid transparent;border-radius:10px;padding:11px 12px;font-weight:800;font-size:16px;display:flex;justify-content:space-between;align-items:center;gap:10px;min-height:48px}
+.opcao small{color:var(--suave);font-weight:600;font-size:13px;text-align:right}
+.opcao[aria-pressed="true"]{border-color:var(--faixa);background:var(--painel-3)}
+.linha{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--linha)}
+.linha .nm{font-weight:800;min-width:0;overflow-wrap:anywhere}
+.linha .nm small{display:block;color:var(--suave);font-size:12.5px;font-weight:600}
+.linha .acoes{flex:none;gap:6px}
+.linha .btn.mini{min-width:44px;min-height:40px}
+.sua-vez{border:2px solid var(--faixa)}
 .escolher button{display:flex;gap:10px;align-items:center;background:var(--painel-2);border:1.5px solid var(--linha);border-radius:12px;padding:14px;font-weight:800;font-size:17px;text-align:left}
 </style>
 </head>
@@ -652,13 +662,33 @@ function publicar(){
       jogadores:(g?g.jogadores:cfg.jogadores).map((p,k)=>({nome:p.nome,cor:p.cor,vivo:g?p.vivo:true,
         terr:g?terrDe(k).length:0,ex:g?exDe(k):0,cartas:g?p.cartas.map(c=>({t:c.t?T[c.t].n:null,s:c.s})):[]})),
       objetivos:g&&g.modo==="objetivos"?g.jogadores.map((p,k)=>objTexto(k)):null,
-      vez:g?g.vez:null,vencedor:g?g.vencedor:null,rodada:g?g.rodada:0,atualizado:Date.now()};
+      vez:g?g.vez:null,vencedor:g?g.vencedor:null,rodada:g?g.rodada:0,atualizado:Date.now(),
+      estado:g&&g.fase!=="config"?{dono:g.dono,ex:g.ex,chegou:g.chegou||{},etapa:g.etapa,reforco:g.reforco,sel:g.sel||"",alvo:g.alvo||"",
+        pend:g.pend||null,dados:g.dados||null,desfaz:g.colocados.length,troca:!!melhorTroca(atual().cartas),bonus:bonusTroca(g.trocas),log:g.log.slice(0,4)}:null};
     rede.update("salas/war-"+sala,dados);
-  },250);
+  },120);
+}
+let desligarCmd=null; const feitos=new Set();
+function executar(c){
+  if(!g||g.fase!=="jogo"||!c||c.i!==g.vez) return;
+  const v=remoto.vinculos||{}; if(v[c.i]!==c.dev) return;
+  if(c.c==="colocar"){
+    if(g.etapa==="reforco"&&g.dono[c.t]===g.vez&&g.reforco>0){
+      const n=c.n==="tudo"?g.reforco:Math.min(+c.n||1,g.reforco);
+      for(let k=0;k<n;k++){g.ex[c.t]++;g.reforco--;g.colocados.push(c.t);} g.sel=c.t;
+    }
+    verificar(); salvar(); desenhar(); return;
+  }
+  if(["desfazer","trocar","avancar","atacar","blitz","ocupar","mover-tudo","sel","alvo","mover"].indexOf(c.c)>=0) agir(c.c,{n:c.n,t:c.t});
 }
 function ligarSala(){
   if(desligar) desligar();
+  if(desligarCmd) desligarCmd();
   const sala=g?g.sala:cfg.sala;
+  desligarCmd=rede.ouvir("salas/war-"+sala+"/comandos",v=>{
+    if(!v) return;
+    Object.keys(v).sort().forEach(k=>{ if(feitos.has(k)) return; feitos.add(k); const c=v[k]; rede.remove("salas/war-"+sala+"/comandos/"+k); executar(c); });
+  });
   desligar=rede.ouvir("salas/war-"+sala+"/vinculos",v=>{remoto.vinculos=v||{};if(g&&cfg.tela==="jogo")$("#painel")&&($("#painel").innerHTML=painelJogo());});
 }
 
@@ -719,12 +749,86 @@ document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==
 const CHAVE_FONE="treta-fone-"+SALA_FONE;
 let eu=abrir(CHAVE_FONE)||{dev:novoId(),i:null}, salaF=null;
 guardar(CHAVE_FONE,eu);
+let somCtx=null;
+function liberarSom(){
+  try{ if(!somCtx){const C=window.AudioContext||window.webkitAudioContext; if(C) somCtx=new C();} if(somCtx&&somCtx.state==="suspended") somCtx.resume(); }catch(e){}
+}
+function aviso(){
+  if(eu.som===false||!somCtx) return;
+  try{
+    const t0=somCtx.currentTime+0.02;
+    [[659.25,0],[880,0.16]].forEach(([f,d])=>{
+      const o=somCtx.createOscillator(), gn=somCtx.createGain();
+      o.type="sine"; o.frequency.value=f;
+      gn.gain.setValueAtTime(0.0001,t0+d); gn.gain.exponentialRampToValueAtTime(0.18,t0+d+0.02); gn.gain.exponentialRampToValueAtTime(0.0001,t0+d+0.55);
+      o.connect(gn); gn.connect(somCtx.destination); o.start(t0+d); o.stop(t0+d+0.6);
+    });
+  }catch(e){}
+}
 function foneClique(e){
+  liberarSom();
   const b=e.target.closest("[data-a]"); if(!b) return;
+  if(b.dataset.a==="som"){ eu.som=eu.som===false; guardar(CHAVE_FONE,eu); if(eu.som!==false) aviso(); }
   if(b.dataset.a==="sou"){ eu.i=+b.dataset.i; guardar(CHAVE_FONE,eu); rede.set("salas/war-"+SALA_FONE+"/vinculos/"+eu.i,eu.dev); }
   if(b.dataset.a==="trocar-eu"){ if(eu.i!=null) rede.remove("salas/war-"+SALA_FONE+"/vinculos/"+eu.i); eu.i=null; guardar(CHAVE_FONE,eu); }
   if(b.dataset.a==="espiar"){ eu.ver=!eu.ver; }
+  if(b.dataset.a==="cmd"&&eu.i!=null){
+    const k=Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+    const c={c:b.dataset.c,i:eu.i,dev:eu.dev}; if(b.dataset.t) c.t=b.dataset.t; if(b.dataset.n) c.n=b.dataset.n;
+    rede.set("salas/war-"+SALA_FONE+"/comandos/"+k,c);
+    b.disabled=true; return;
+  }
   desenharFone();
+}
+const NOME_ETAPA={reforco:"Reforço",ataque:"Ataque",mover:"Remanejar"};
+let vezAnterior=null;
+function painelVezFone(s){
+  const e=s.estado, i=eu.i; if(!e||s.fase!=="jogo") return "";
+  const dono=t=>e.dono[t], ex=t=>e.ex[t]||0, meu=t=>dono(t)===i;
+  const inim=t=>T[t].a.filter(v=>dono(v)!==i), meusViz=t=>T[t].a.filter(v=>dono(v)===i);
+  const nomeJ=k=>s.jogadores[k]?s.jogadores[k].nome:"";
+  const cmd=(c,txt,extra,cls)=>'<button class="btn'+(cls||"")+'" data-a="cmd" data-c="'+c+'"'+(extra||"")+'>'+txt+'</button>';
+  const opc=(c,t,info,on)=>'<button class="opcao" data-a="cmd" data-c="'+c+'" data-t="'+t+'" aria-pressed="'+!!on+'"><span>'+esc(T[t].n)+'</span><small>'+info+'</small></button>';
+  if(s.vez!==i){
+    const j=s.jogadores[s.vez]||{};
+    return '<div class="cartao"><p class="rotulo">Vez de</p><div class="vez"><span class="bolinha" style="background:'+cor(j.cor).h+'"></span><strong>'+esc(j.nome)+'</strong><span class="chip">'+(NOME_ETAPA[e.etapa]||"")+'</span></div>'+
+      (e.log&&e.log.length?'<ul class="diario">'+e.log.map(l=>'<li>'+esc(l)+'</li>').join("")+'</ul>':'')+'</div>';
+  }
+  const meus=Object.keys(e.dono).filter(meu);
+  let h='<div class="cartao sua-vez"><p class="rotulo">Sua vez · rodada '+s.rodada+'</p><div class="etapas">'+(s.rodada===1?["reforco"]:["reforco","ataque","mover"]).map(k=>'<span class="'+(k===e.etapa?"ativa":"")+'">'+NOME_ETAPA[k]+'</span>').join("")+'</div>';
+  if(e.etapa==="reforco"){
+    const ord=meus.slice().sort((a,b)=>inim(b).length-inim(a).length||ex(b)-ex(a));
+    h+='<div class="acoes" style="justify-content:space-between"><span class="grande">'+e.reforco+'</span><span class="nota">'+(e.reforco?"exércitos para colocar":"tudo colocado")+'</span></div>';
+    if(e.reforco) h+='<div>'+ord.map(t=>'<div class="linha"><span class="nm">'+esc(T[t].n)+'<small>'+pl(ex(t),"exército","exércitos")+(inim(t).length?" · "+pl(inim(t).length,"vizinho inimigo","vizinhos inimigos"):" · protegido")+'</small></span><span class="acoes">'+
+      cmd("colocar","+1",' data-t="'+t+'" data-n="1"',' sec mini')+(e.reforco>=3?cmd("colocar","+3",' data-t="'+t+'" data-n="3"',' sec mini'):'')+cmd("colocar","Todos",' data-t="'+t+'" data-n="tudo"',' sec mini')+'</span></div>').join("")+'</div>';
+    h+='<div class="acoes">'+cmd("avancar",s.rodada===1?"Passar a vez":"Ir para o ataque",e.reforco?" disabled":"")+cmd("desfazer","Desfazer",e.desfaz?"":" disabled"," sec")+
+      (e.troca?cmd("trocar","Trocar cartas (+"+e.bonus+")",""," sec"):"")+'</div>';
+  }else if(e.etapa==="ataque"){
+    if(e.pend){
+      let b=""; for(let n=1;n<=e.pend.max;n++) b+=cmd("ocupar",String(n),' data-n="'+n+'"',n===e.pend.max?"":" sec");
+      h+='<p><b>'+esc(T[e.pend.para].n)+'</b> é sua! Quantos exércitos entram vindo de '+esc(T[e.pend.de].n)+'?</p><div class="acoes">'+b+'</div>';
+    }else{
+      const origens=meus.filter(t=>ex(t)>=2&&inim(t).length);
+      if(e.dados&&e.dados.nome) h+='<div class="bloco"><div class="mesa"><div class="dados">'+e.dados.a.map((v,k)=>dadoHTML(v,"atk",e.dados.res[k]==="d")).join("")+'</div><span class="rotulo">contra</span><div class="dados">'+e.dados.d.map((v,k)=>dadoHTML(v,"def",e.dados.res[k]==="a")).join("")+'</div></div><p class="nota">'+esc(e.dados.nome[0])+' perdeu '+e.dados.pa+' · '+esc(e.dados.nome[1])+' perdeu '+e.dados.pd+'</p></div>';
+      h+='<p class="rotulo">Atacar de</p>'+(origens.length?'<div class="opcoes">'+origens.map(t=>opc("sel",t,pl(ex(t),"exército","exércitos"),e.sel===t)).join("")+'</div>':'<p class="nota">Nenhum território seu pode atacar agora.</p>');
+      if(e.sel&&meu(e.sel)){
+        h+='<p class="rotulo">Alvo</p><div class="opcoes">'+inim(e.sel).map(t=>opc("alvo",t,esc(nomeJ(dono(t)))+" · "+ex(t),e.alvo===t)).join("")+'</div>';
+        if(e.alvo&&!meu(e.alvo)) h+='<p>'+Math.min(3,ex(e.sel)-1)+' dados contra '+Math.min(3,ex(e.alvo))+'.</p><div class="acoes">'+cmd("atacar","Rolar dados")+cmd("blitz","Atacar até o fim",""," sec")+'</div>';
+      }
+      h+='<div class="acoes">'+cmd("avancar","Parar de atacar",""," sec")+'</div>';
+    }
+  }else{
+    const livreF=t=>ex(t)-1-((e.chegou&&e.chegou[t])||0);
+    const origens=meus.filter(t=>livreF(t)>0&&meusViz(t).length);
+    h+='<p class="nota">Cada toque no destino move 1 exército. Quem já se mexeu fica onde está.</p><p class="rotulo">Tirar de</p>'+
+      (origens.length?'<div class="opcoes">'+origens.map(t=>opc("sel",t,livreF(t)+" livres",e.sel===t)).join("")+'</div>':'<p class="nota">Nada para mover.</p>');
+    if(e.sel&&meu(e.sel)){
+      h+='<p class="rotulo">Levar para</p><div class="opcoes">'+meusViz(e.sel).map(t=>opc("mover",t,pl(ex(t),"exército","exércitos"),e.alvo===t)).join("")+'</div>';
+      if(e.alvo&&livreF(e.sel)>0) h+='<div class="acoes">'+cmd("mover-tudo","Mover os "+livreF(e.sel)+" livres para "+esc(T[e.alvo].n),""," sec")+'</div>';
+    }
+    h+='<div class="acoes">'+cmd("avancar","Terminar a vez")+'</div>';
+  }
+  return h+'</div>';
 }
 function desenharFone(){
   const app=$("#app"); app.className="app fone";
@@ -741,12 +845,14 @@ function desenharFone(){
     if(s.modo==="total") objHTML='<p class="objetivo">Conquistar todos os 34 territórios</p>';
     else if(s.fase!=="jogo"&&s.fase!=="fim") objHTML='<p class="nota">Seu objetivo aparece aqui quando a partida começar.</p>';
     else objHTML=eu.ver?'<p class="objetivo">'+esc(obj||"")+'</p><button class="btn sec" data-a="espiar">Esconder</button>':'<button class="btn" data-a="espiar">Ver meu objetivo</button>';
-    corpo='<div class="cartao"><div class="vez"><span class="bolinha" style="background:'+cor(p.cor).h+'"></span><strong>'+esc(p.nome)+'</strong></div>'+
+    if(s.vez===eu.i&&s.fase==="jogo"&&vezAnterior!=null&&vezAnterior!==eu.i){ aviso(); if(navigator.vibrate){try{navigator.vibrate(200);}catch(e){}} }
+    vezAnterior=s.vez;
+    corpo=(p.vivo?painelVezFone(s):'')+'<div class="cartao"><div class="vez"><span class="bolinha" style="background:'+cor(p.cor).h+'"></span><strong>'+esc(p.nome)+'</strong></div>'+
       (p.vivo?'<p class="nota">'+pl(p.terr,"território","territórios")+' · '+pl(p.ex,"exército","exércitos")+(s.vez===eu.i&&s.fase==="jogo"?' · <b style="color:var(--faixa)">sua vez</b>':'')+'</p>':'<p class="nota">Você foi eliminado. Ainda dá para torcer.</p>')+
       '<p class="rotulo">Objetivo secreto</p>'+objHTML+'</div>'+
       '<div class="cartao"><p class="rotulo">Suas cartas</p>'+(p.cartas&&p.cartas.length?'<div class="cartas">'+p.cartas.map(c=>'<span class="carta"><span class="simb">'+SIMB[c.s]+'</span>'+esc(c.t||"Coringa")+'</span>').join("")+'</div>':'<p class="nota">Nenhuma carta ainda.</p>')+'</div>'+
       (s.fase==="fim"&&s.vencedor!=null?'<div class="cartao"><p class="chamada">'+esc(s.jogadores[s.vencedor].nome)+' venceu</p></div>':'')+
-      '<div class="acoes"><button class="btn sec mini" data-a="trocar-eu">Não sou '+esc(p.nome)+'</button></div>';
+      '<div class="acoes"><button class="btn sec mini" data-a="som" aria-pressed="'+(eu.som!==false)+'">'+(eu.som!==false?"Aviso sonoro ligado":"Aviso sonoro desligado")+'</button><button class="btn sec mini" data-a="trocar-eu">Não sou '+esc(p.nome)+'</button></div>';
   }
   app.innerHTML='<header class="topo"><h1 class="marca">Treta <span>Metropolitana</span></h1><div class="topo-lado"><span class="chip sala">Sala '+esc(SALA_FONE)+'</span></div></header><main class="bloco">'+corpo+'</main>';
 }
